@@ -42,7 +42,8 @@ int main(int argc, char **argv) {
   
   struct timespec stime, etime;
   double t;
-
+  //int k = 0;
+  
   if (clock_gettime(CLOCK_THREAD_CPUTIME_ID , &stime)) {
     fprintf(stderr, "clock_gettime failed");
     exit(-1);

@@ -1,3 +1,5 @@
+// gcc -std=gnu99 -o lr rlz_tools.hpp -fcilkplus -lcilkrts -lm -lrt
+
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -11,6 +13,11 @@
 #include <iostream>
 #include <sstream>
 
+#include <cilk/cilk.h>
+#include <cilk/cilk_api.h>
+#include <cilk/reducer_opadd.h>
+#include <cilk/common.h>
+
 #include "dictionary.h"
 #include "../../LZscan/algorithm/lzscan.h"
 
@@ -21,6 +28,8 @@ using std::endl;
 using std::vector;
 using std::pair;
 using std::string;
+
+#define num_threads __cilkrts_get_nworkers()
 
 // Parse the reference using a LZ77 compressor
 size_t lz_parse_ref(uint8_t * seq,
@@ -108,7 +117,7 @@ size_t process_block(uint8_t *buffer, size_t buffer_len, size_t block_offset,
   vector<vector<Factor>> factor_lists(n_partitions);
 
   // Processing the current buffer partition by partition
-  for (size_t t = 0; t < n_partitions; t++) {
+  cilk_for (size_t t = 0; t < n_partitions; t++) {
     size_t starting_pos = t*(buffer_len/n_partitions);
     size_t length = (t != n_partitions - 1) ? (buffer_len/n_partitions) :
       buffer_len - starting_pos; 
@@ -137,8 +146,10 @@ size_t parse_in_external_memory(char * input_filename,
   d.BuildSA();
 
   // Parsing the reference
-  size_t n_factors = 0;
-  n_factors = parse_ref<sa_t>(d, w, max_memory_MB);  
+  // size_t n_factors = 0;
+  // n_factors = parse_ref<sa_t>(d, w, max_memory_MB);  
+  cilk::reducer_opadd<size_t> n_factors(parse_ref<sa_t>(d, w, max_memory_MB));
+
 
   size_t text_len;
   FILE * fp = open_file(input_filename, &text_len);
@@ -153,26 +164,22 @@ size_t parse_in_external_memory(char * input_filename,
   // We will read blocks of size "block_len" bytes
   size_t block_offset = d.n;
   fseek(fp, block_offset, SEEK_SET);
-  size_t block_id = 0;
-  uint8_t *buffer = new uint8_t[block_len + 1];
 
-  // Processing block by block
-  while (block_offset < text_len) {
-    size_t buffer_len = (block_offset + block_len < text_len) ? block_len :
-      text_len - block_offset;
 
-    // Each block is divided in partitions. The total number of partitions is
-    // given in n_partitions 
-    n_factors += process_block(buffer, buffer_len, block_offset, block_id, fp,
-			       n_partitions, d, w);
-    
-    block_offset += buffer_len;
-    block_id++;
-  }
-  
-  delete [] buffer;
+  // Paraller block processing
+  cilk_for(int i = block_offset; i < text_len; i += block_len){
+    size_t buffer_len = (block_offset + block_len < text_len) ? block_len : text_len - block_offset;
+    uint8_t *buffer = new uint8_t[block_len + 1];
+    size_t block_id = (i - block_offset) / buffer_len;
+
+    *n_factors += process_block(buffer, buffer_len, i, block_id, fp,
+                               n_partitions, d, w);
+
+    delete [] buffer;
+  }  
+
   fclose(fp);
   fflush(stdout);
   
-  return n_factors;
+  return n_factors.get_value();
 }
