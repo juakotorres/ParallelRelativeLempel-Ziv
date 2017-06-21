@@ -16,6 +16,7 @@
 #include <cilk/cilk.h>
 #include <cilk/cilk_api.h>
 #include <cilk/reducer_opadd.h>
+#include <cilk/reducer_ostream.h>
 #include <cilk/common.h>
 
 #include "dictionary.h"
@@ -35,13 +36,15 @@ using std::string;
 size_t lz_parse_ref(uint8_t * seq,
                     size_t seq_len,
                     Writer &w,
-                    int max_memory_MB) {
+                    int max_memory_MB,
+                    cilk::reducer_ostream &hyper_cout) {
   vector<pair<int, int>> ref_parsing;
   int n_phrases = parse(seq, 
                         seq_len, 
                         max_memory_MB << 20, 
                         &ref_parsing);
   for (int i = 0; i < n_phrases; i++) {
+    *hyper_cout << ref_parsing[i].first << ref_parsing[i].second;
     w.write(ref_parsing[i].first, 64);
     w.write(ref_parsing[i].second, 64);
   }
@@ -49,13 +52,21 @@ size_t lz_parse_ref(uint8_t * seq,
 }
 
 // Write the list of factor into the output
-size_t flush_phrases(vector<vector<Factor>> factor_lists, Writer &w) {
+size_t flush_phrases(vector<vector<Factor>> factor_lists, Writer &w, cilk::reducer_ostream &hyper_cout) {
   size_t n_factors = 0;
   w.flush();
+  (*hyper_cout).get_reference().flush();
   for (size_t t = 0; t < factor_lists.size(); t++) {
     n_factors += factor_lists[t].size(); 
-     
+    
     size_t data_len = factor_lists[t].size();
+    for(int i = 0; i < data_len; i++){
+      Factor actualFactor = factor_lists[t][i];
+
+      *hyper_cout << actualFactor.pos;
+      *hyper_cout << actualFactor.len; 
+    }
+
     if (data_len != fwrite(&(factor_lists[t][0]),
                            sizeof(Factor),
                            data_len, 
@@ -86,20 +97,26 @@ void chunk_parse(uint8_t* buffer,
 template <typename sa_t>
 size_t parse_ref(Dictionary<sa_t> &d,
                  Writer &w,
-                 int max_memory_MB) {
+                 int max_memory_MB,
+                  cilk::reducer_ostream &hyper_cout) {
   size_t n_factors; 
 
   size_t EMLZ_limit_MB = (29L*(INT32_MAX/2))/(1L<<20);
   size_t EMLZ_mem_MB = std::min(EMLZ_limit_MB, (size_t)max_memory_MB);
 
-  n_factors = lz_parse_ref(d.d, d.n, w, EMLZ_mem_MB);
+  n_factors = lz_parse_ref(d.d, d.n, w, EMLZ_mem_MB, hyper_cout);
 
   return n_factors;
 }
 
-void read_block(uint8_t *buffer, size_t buffer_len, size_t block_id, FILE * fp) {
+void read_block(uint8_t *buffer, size_t buffer_len, size_t block_id, FILE * fp, size_t block_offset,  size_t text_len) {
+  fseek(fp, block_offset, SEEK_SET);
+
   if (buffer_len != fread(buffer, 1, buffer_len, fp)) {
     printf("Error reading block %ld\n", block_id);
+    printf("buffer length %ld\n", buffer_len);
+    printf("Block offset %ld\n", block_offset);
+    printf("Text Length %ld\n", text_len);
     exit(EXIT_FAILURE);
   }
 }
@@ -108,10 +125,11 @@ void read_block(uint8_t *buffer, size_t buffer_len, size_t block_id, FILE * fp) 
 template <typename sa_t>
 size_t process_block(uint8_t *buffer, size_t buffer_len, size_t block_offset,
 		     size_t block_id,  FILE * fp, size_t n_partitions,
-		     Dictionary<sa_t>& d, Writer& w) {
+		     Dictionary<sa_t>& d, Writer& w,  size_t text_len,
+         cilk::reducer_ostream &hyper_cout) {
 
   // Reading the buffer
-  read_block(buffer, buffer_len, block_id, fp);
+  read_block(buffer, buffer_len, block_id, fp, block_offset, text_len);
 
   // Creating a list of vectors to store the factors of each partition
   vector<vector<Factor>> factor_lists(n_partitions);
@@ -129,7 +147,7 @@ size_t process_block(uint8_t *buffer, size_t buffer_len, size_t block_offset,
   }
 
   // Writing the list of factor into the output
-  size_t n_factors = flush_phrases(factor_lists, w);
+  size_t n_factors = flush_phrases(factor_lists, w, hyper_cout);
   return n_factors;
 }
 
@@ -145,11 +163,14 @@ size_t parse_in_external_memory(char * input_filename,
   Dictionary<sa_t> d(reference_filename, INT32_MAX);
   d.BuildSA();
 
+  std::ofstream ofs("shawarma.txt", std::ofstream::out);
+  cilk::reducer_ostream hyper_cout(ofs);
+
+
   // Parsing the reference
   // size_t n_factors = 0;
   // n_factors = parse_ref<sa_t>(d, w, max_memory_MB);  
-  cilk::reducer_opadd<size_t> n_factors(parse_ref<sa_t>(d, w, max_memory_MB));
-
+  cilk::reducer_opadd<size_t> n_factors(parse_ref<sa_t>(d, w, max_memory_MB, hyper_cout));
 
   size_t text_len;
   FILE * fp = open_file(input_filename, &text_len);
@@ -165,15 +186,14 @@ size_t parse_in_external_memory(char * input_filename,
   size_t block_offset = d.n;
   fseek(fp, block_offset, SEEK_SET);
 
-
   // Paraller block processing
   cilk_for(int i = block_offset; i < text_len; i += block_len){
-    size_t buffer_len = (block_offset + block_len < text_len) ? block_len : text_len - block_offset;
+    size_t buffer_len = (i + block_len < text_len) ? block_len : text_len - i;
     uint8_t *buffer = new uint8_t[block_len + 1];
     size_t block_id = (i - block_offset) / buffer_len;
 
     *n_factors += process_block(buffer, buffer_len, i, block_id, fp,
-                               n_partitions, d, w);
+                               n_partitions, d, w, text_len, hyper_cout);
 
     delete [] buffer;
   }  
