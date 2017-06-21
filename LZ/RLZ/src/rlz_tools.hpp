@@ -44,7 +44,7 @@ size_t lz_parse_ref(uint8_t * seq,
                         max_memory_MB << 20, 
                         &ref_parsing);
   for (int i = 0; i < n_phrases; i++) {
-    *hyper_cout << ref_parsing[i].first << ref_parsing[i].second;
+    //*hyper_cout << ref_parsing[i].first << ref_parsing[i].second;
     w.write(ref_parsing[i].first, 64);
     w.write(ref_parsing[i].second, 64);
   }
@@ -60,12 +60,12 @@ size_t flush_phrases(vector<vector<Factor>> factor_lists, Writer &w, cilk::reduc
     n_factors += factor_lists[t].size(); 
     
     size_t data_len = factor_lists[t].size();
-    for(int i = 0; i < data_len; i++){
+    /*for(int i = 0; i < data_len; i++){
       Factor actualFactor = factor_lists[t][i];
 
       *hyper_cout << actualFactor.pos;
       *hyper_cout << actualFactor.len; 
-    }
+    }*/
 
     if (data_len != fwrite(&(factor_lists[t][0]),
                            sizeof(Factor),
