@@ -55,7 +55,7 @@ size_t lz_parse_ref(uint8_t * seq,
 size_t flush_phrases(vector<vector<Factor>> factor_lists, Writer &w, cilk::reducer_ostream &hyper_cout) {
   size_t n_factors = 0;
   w.flush();
-  (*hyper_cout).get_reference().flush();
+  //(*hyper_cout).get_reference().flush();
   for (size_t t = 0; t < factor_lists.size(); t++) {
     n_factors += factor_lists[t].size(); 
     
@@ -136,6 +136,7 @@ size_t process_block(uint8_t *buffer, size_t buffer_len, size_t block_offset,
 
   // Processing the current buffer partition by partition
   cilk_for (size_t t = 0; t < n_partitions; t++) {
+    vector<Factor> auxiliaryFactor;
     size_t starting_pos = t*(buffer_len/n_partitions);
     size_t length = (t != n_partitions - 1) ? (buffer_len/n_partitions) :
       buffer_len - starting_pos; 
@@ -143,7 +144,8 @@ size_t process_block(uint8_t *buffer, size_t buffer_len, size_t block_offset,
     assert(d.n <= block_offset + starting_pos);
 
     // Processing the partition t
-    chunk_parse(buffer+starting_pos, length, d, factor_lists[t]); 
+    chunk_parse(buffer+starting_pos, length, d, auxiliaryFactor); 
+    factor_lists[t] = auxiliaryFactor;
   }
 
   // Writing the list of factor into the output
